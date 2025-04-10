@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Insane 3D Periodic Table (Full)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+            font-family: Arial, sans-serif;
+            background-color: #111; /* Dark background */
+            color: #fff;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #info-box {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 15px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border: 1px solid #555;
+            border-radius: 8px;
+            color: #eee;
+            display: none; /* Hidden by default */
+            max-width: 250px;
+            font-size: 14px;
+            line-height: 1.4;
+            pointer-events: none; /* Prevent info box from blocking clicks */
+            z-index: 100;
+        }
+        #info-box h2 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #0f0; /* Green heading */
+            font-size: 18px;
+        }
+         #info-box p {
+             margin-bottom: 5px;
+         }
+         #instructions {
+             position: absolute;
+             bottom: 10px;
+             right: 10px;
+             padding: 10px;
+             background-color: rgba(0, 0, 0, 0.6);
+             border-radius: 5px;
+             font-size: 12px;
+             color: #aaa;
+             z-index: 99;
+         }
+         #loading-indicator { /* Added loading indicator style */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 20px;
+            color: #ccc;
+            z-index: 101;
+         }
+    </style>
+</head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-M6TML3KEDG"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-M6TML3KEDG');
+</script>
+<body>
+    <div id="container"></div>
+    <div id="loading-indicator">Loading Elements...</div> <!-- Added loading indicator -->
+    <div id="info-box">
+        <h2>Element Info</h2>
+        <p><strong>Symbol:</strong> <span id="info-symbol"></span></p>
+        <p><strong>Name:</strong> <span id="info-name"></span></p>
+        <p><strong>Atomic Number:</strong> <span id="info-number"></span></p>
+        <p><strong>Atomic Mass:</strong> <span id="info-mass"></span></p>
+        <p><strong>Category:</strong> <span id="info-category"></span></p>
+        <p><strong>Block:</strong> <span id="info-block"></span></p>
+        <p><strong>Summary:</strong> <span id="info-summary"></span></p>
+    </div>
+    <div id="instructions">
+        Click/Tap an element to see details. Drag to rotate. Scroll/Pinch to zoom.
+    </div>
+    <audio id="sparkler-sound" src="sparkler.mp3" loop preload="auto"></audio> <!-- Added Sparkler Sound -->
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/",
+          "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js"
+        }
+      }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import * as CANNON from 'cannon-es'; // Import Cannon-es
+
+        // --- Global Variables ---
+        let scene, camera, renderer, controls;
+        let world; // Cannon-es physics world
+        let elementMeshes = []; // Array to hold Three.js meshes
+        let elementBodies = []; // Array to hold Cannon-es bodies
+        let physicsSync = []; // Array to link meshes and bodies { mesh, body }
+        let raycaster;
+        let pointer; // For mouse/touch coordinates
+        let INTERSECTED; // Currently hovered/selected element
+        let periodicTableData = []; // Initialize empty array for data
+        const clock = new THREE.Clock(); // For physics step delta time
+
+        // --- Interaction State ---
+        let isDragging = false;
+        let draggedBody = null;
+        let mouseConstraint = null;
+        let mouseBody = null; // A dummy body to represent the mouse position for constraint
+        const plane = new THREE.Plane(); // Plane for projecting mouse movement
+
+        // --- Sparkle Effect State ---
+        let sparkleSystem;
+        let sparkleGeometry;
+        let sparkleMaterial;
+        const maxSparkles = 200;
+        const sparkleParticles = []; // Pool of { position: Vec3, velocity: Vec3, lifetime: number, active: boolean }
+        const sparkleSpawnRate = 5; // Particles per frame while dragging
+        const sparkleLifetime = 0.5; // Seconds
+        const sparkleSpeed = 5;
+        // DOM elements
+        const container = document.getElementById('container');
+        const loadingIndicator = document.getElementById('loading-indicator'); // Get loading indicator
+        const infoBox = document.getElementById('info-box');
+        const infoSymbol = document.getElementById('info-symbol');
+        const infoName = document.getElementById('info-name');
+        const infoNumber = document.getElementById('info-number');
+        const infoMass = document.getElementById('info-mass');
+        const infoCategory = document.getElementById('info-category');
+        const infoBlock = document.getElementById('info-block');
+        const infoSummary = document.getElementById('info-summary');
+        let sparklerSound; // Added for sparkler sound effect
+
+
+        // --- Config & Helpers ---
+        const elementSize = 1.5;
+        const spacing = 2.5;
+
+        // Color mapping based on category
+        const categoryColors = {
+            "diatomic nonmetal":    0x33ccff, "noble gas":            0xcc33ff,
+            "alkali metal":         0xff6633, "alkaline earth metal": 0xffff33,
+            "metalloid":            0x66cc66, "polyatomic nonmetal":  0x33ff99,
+            "halogen":              0x3399ff, "post-transition metal":0xcccccc,
+            "transition metal":     0xff99cc, "lanthanide":           0x99ccff,
+            "actinide":             0xffcc99, "unknown":              0xaaaaaa,
+        };
+
+        // Shape mapping based on block
+        const blockShapes = {
+            's': 'sphere', 'p': 'box', 'd': 'octahedron', 'f': 'capsule',
+        };
+
+        function getElementStyle(element) {
+            const category = element.category.toLowerCase();
+            const block = element.block.toLowerCase();
+            return {
+                color: categoryColors[category] || categoryColors["unknown"],
+                shape: blockShapes[block] || 'box'
+            };
+        }
+
+        function createElementGeometry(shapeType, size) { // THREE.js Geometry
+            switch(shapeType) {
+                case 'sphere':      return new THREE.SphereGeometry(size * 0.7, 20, 10); // Reduced segments for performance
+                case 'box':         return new THREE.BoxGeometry(size, size, size);
+                case 'octahedron':  return new THREE.OctahedronGeometry(size * 0.8, 0);
+                case 'capsule':     return new THREE.CapsuleGeometry(size * 0.5, size * 0.5, 4, 8);
+                default:            return new THREE.BoxGeometry(size, size, size);
+            }
+        }
+
+        function createPhysicsShape(shapeType, size) { // Cannon-es Shape
+            switch(shapeType) {
+                case 'sphere':      return new CANNON.Sphere(size * 0.7);
+                case 'box':         return new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2));
+                // Cannon doesn't have Octahedron or Capsule built-in, approximate with sphere/box or use ConvexPolyhedron (more complex)
+                // Using Sphere as a fallback for Octahedron and Capsule for simplicity here
+                case 'octahedron':  return new CANNON.Sphere(size * 0.8); // Approximation
+                case 'capsule':     return new CANNON.Sphere(size * 0.6); // Approximation (radius slightly larger than capsule half-height)
+                default:            return new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2));
+            }
+        }
+
+        // --- Initialization ---
+        async function loadDataAndInit() {
+            try {
+                const response = await fetch('elements.json');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                periodicTableData = await response.json();
+                console.log("Element data loaded successfully:", periodicTableData.length, "elements");
+                initScene();
+                animate();
+                loadingIndicator.style.display = 'none'; // Hide loading indicator *only on success*
+            } catch (error) {
+                console.error("Error during initialization:", error); // Log the specific error
+                loadingIndicator.textContent = `Error loading elements! Check console.`; // Update message
+            }
+        }
+
+        function initScene() {
+            // --- Physics World Setup ---
+            world = new CANNON.World({
+                gravity: new CANNON.Vec3(0, 0, 0), // No global gravity
+                // allowSleep: true // Allow bodies to sleep for performance
+            });
+            world.broadphase = new CANNON.NaiveBroadphase();
+            world.solver.iterations = 7; // Slightly more iterations for constraint stability
+
+            // Create the dummy body for mouse interaction (kinematic)
+            mouseBody = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
+            const mouseShape = new CANNON.Sphere(0.1); // Tiny shape, doesn't interact
+            mouseBody.addShape(mouseShape);
+            world.addBody(mouseBody);
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+            scene.fog = new THREE.Fog(0x111111, 80, 200); // Adjust fog for potentially larger spread
+
+            // --- Initialize Sparkle System (Moved Here) ---
+            sparkleGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(maxSparkles * 3);
+            // Initialize all positions to NaN so they don't render at origin initially
+            for(let i = 0; i < maxSparkles * 3; i++) { positions[i] = NaN; }
+            sparkleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            sparkleMaterial = new THREE.PointsMaterial({
+                color: 0xffffff,
+                size: 0.25, // Slightly larger sparkles
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false,
+                sizeAttenuation: true
+            });
+
+            sparkleSystem = new THREE.Points(sparkleGeometry, sparkleMaterial);
+            sparkleSystem.visible = false; // Start hidden
+            scene.add(sparkleSystem); // Now 'scene' exists
+
+            // Initialize particle pool
+            for (let i = 0; i < maxSparkles; i++) {
+                sparkleParticles.push({
+                    position: new THREE.Vector3(),
+                    velocity: new THREE.Vector3(),
+                    lifetime: 0,
+                    active: false
+                });
+            }
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 60; // Move camera back slightly
+            camera.position.y = 20;
+            camera.lookAt(0, 0, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // Get Audio Element
+            sparklerSound = document.getElementById('sparkler-sound');
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xcccccc, 0.7);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.8);
+            directionalLight.position.set(10, 15, 10);
+            scene.add(directionalLight);
+            const pointLight = new THREE.PointLight(0xffffff, 0.6, 150);
+            pointLight.position.set(-15, -10, -15);
+            scene.add(pointLight);
+
+            // Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 5;
+            controls.maxDistance = 150; // Allow zooming further out
+
+             // Raycaster for Interaction
+            raycaster = new THREE.Raycaster();
+            pointer = new THREE.Vector2();
+
+            // Create Periodic Table Elements (Physics and Visuals)
+            populateTable(); // Creates meshes and physics bodies
+
+            // No need to center a group anymore, elements are positioned by physics
+            controls.target.set(0, 0, 0); // Target the center of the physics simulation
+            controls.update();
+
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            container.addEventListener('pointerdown', onPointerDown);
+            container.addEventListener('pointermove', onPointerMove); // Add move listener
+            container.addEventListener('pointerup', onPointerUp);     // Add up listener
+            container.addEventListener('pointerleave', onPointerUp); // Treat leaving as pointer up
+        }
+
+        // --- Create Element Objects ---
+        function populateTable() {
+            if (!periodicTableData || periodicTableData.length === 0) {
+                console.error("No element data available to populate the table.");
+                return;
+            }
+
+            const initialSpread = 40; // How spread out elements start
+            const massScale = 0.5; // Base mass for physics bodies
+
+            periodicTableData.forEach((element, index) => {
+                try { // Add try block for individual element processing
+                    if (!element || typeof element.number === 'undefined') {
+                        console.warn(`Skipping invalid element data at index ${index}:`, element);
+                        return; // Use return to skip this iteration in forEach
+                    }
+                    if (typeof element.category !== 'string' || typeof element.block !== 'string') {
+                         console.warn(`Skipping element ${element.symbol} due to missing/invalid category or block:`, element);
+                         return;
+                    }
+
+                    const style = getElementStyle(element);
+
+                    // --- Create Three.js Mesh ---
+                    const geometry = createElementGeometry(style.shape, elementSize);
+                    const material = new THREE.MeshStandardMaterial({
+                        color: style.color,
+                        roughness: 0.4, metalness: 0.2, emissive: 0x000000,
+                        transparent: true, opacity: 0.95
+                    });
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.userData = element;
+
+                    // --- Create Cannon-es Body ---
+                    const physicsShape = createPhysicsShape(style.shape, elementSize);
+                    const mass = (typeof element.atomic_mass === 'number' && element.atomic_mass > 0) ? element.atomic_mass * massScale : 1 * massScale; // Ensure mass is positive
+                    const body = new CANNON.Body({
+                        mass: mass,
+                        shape: physicsShape,
+                        position: new CANNON.Vec3(
+                            (Math.random() - 0.5) * initialSpread,
+                            (Math.random() - 0.5) * initialSpread,
+                            (Math.random() - 0.5) * initialSpread
+                        ),
+                        velocity: new CANNON.Vec3(
+                            (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2
+                        ),
+                        angularVelocity: new CANNON.Vec3(
+                            (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5
+                        ),
+                        angularDamping: 0.2,
+                        linearDamping: 0.1
+                    });
+                    body.allowSleep = true;
+                    body.sleepSpeedLimit = 0.2;
+                    body.sleepTimeLimit = 0.5;
+
+                    body.userData = mesh;
+                    world.addBody(body);
+                    scene.add(mesh);
+
+                    // Store references
+                    physicsSync.push({ mesh: mesh, body: body });
+                    elementMeshes.push(mesh);
+                    elementBodies.push(body);
+
+                } catch (elementError) {
+                    // Catch errors specific to processing one element
+                    console.error(`Error processing element ${element?.symbol || `at index ${index}`}:`, elementError, "Element data:", element);
+                    // Optionally, decide whether to continue processing other elements or stop
+                }
+            });
+            console.log("Created", physicsSync.length, "elements with physics bodies.");
+        }
+
+
+        // --- Event Handlers ---
+        function onWindowResize() {
+            if (!camera || !renderer) return; // Check if initialized
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Helper function to get 3D point on a plane from mouse coords (using raycaster)
+        function getMouseWorldPositionOnPlane(event, targetPlanePoint) {
+            pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Set the raycaster from the camera and pointer
+            raycaster.setFromCamera(pointer, camera);
+
+            // Define the plane based on the target point and camera direction
+            // This plane is parallel to the camera's view plane and passes through targetPlanePoint
+            plane.setFromNormalAndCoplanarPoint(
+                camera.getWorldDirection(new THREE.Vector3()), // Normal vector pointing away from camera
+                targetPlanePoint // Point on the plane (e.g., the clicked object's position)
+            );
+
+            // Find the intersection point of the ray with this plane
+            const intersectionPoint = new THREE.Vector3();
+            if (raycaster.ray.intersectPlane(plane, intersectionPoint)) {
+                return intersectionPoint;
+            }
+            console.warn("Could not find intersection point on plane.");
+            return null; // Return null if no intersection
+        }
+
+
+        function onPointerDown(event) {
+            if (!raycaster || !camera || elementMeshes.length === 0 || isDragging || !world) return; // Check world exists
+
+            pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(pointer, camera);
+            const intersects = raycaster.intersectObjects(elementMeshes, false); // Intersect visual meshes
+
+            if (intersects.length > 0) {
+                const clickedMesh = intersects[0].object;
+                const intersectionPoint = intersects[0].point; // Where the ray hit the object
+
+                // Find the corresponding physics body
+                const syncData = physicsSync.find(sync => sync.mesh === clickedMesh);
+                if (!syncData || !syncData.body) {
+                    console.warn("Clicked mesh has no associated physics body.");
+                    return;
+                }
+                draggedBody = syncData.body;
+
+                // --- Start Dragging ---
+                isDragging = true;
+                if (sparklerSound) sparklerSound.play(); // Play sparkler sound
+                controls.enabled = false; // Disable camera controls while dragging
+
+                // Wake up the body if it's sleeping
+                draggedBody.wakeUp();
+
+                // Calculate offset from body center to intersection point in body's local frame
+                const worldPoint = new CANNON.Vec3(intersectionPoint.x, intersectionPoint.y, intersectionPoint.z);
+                const localPoint = draggedBody.pointToLocalFrame(worldPoint);
+
+                // Move the kinematic mouseBody to the intersection point
+                if (!mouseBody) {
+                    console.error("mouseBody not initialized!");
+                    return;
+                }
+                mouseBody.position.copy(worldPoint);
+
+                // Create the point-to-point constraint
+                // Connects the localPoint on draggedBody to the center (0,0,0) of mouseBody
+                mouseConstraint = new CANNON.PointToPointConstraint(
+                    draggedBody, localPoint,        // Body A, pivot A (local)
+                    mouseBody, new CANNON.Vec3(0, 0, 0), // Body B, pivot B (local)
+                    1e6 // Constraint force - high value makes it stiff
+                );
+                world.addConstraint(mouseConstraint);
+
+                // --- Update Info Box (keep this part) ---
+                if (INTERSECTED !== clickedMesh) {
+                    if (INTERSECTED) {
+                         INTERSECTED.material.emissive.setHex(INTERSECTED.currentHex || 0x000000); // Reset emissive
+                         INTERSECTED.material.opacity = 0.95; // Reset opacity
+                    }
+                    INTERSECTED = clickedMesh;
+                    INTERSECTED.currentHex = INTERSECTED.material.emissive.getHex(); // Store current emissive
+                    INTERSECTED.material.emissive.setHex(0x555555); // Set highlight emissive
+                    INTERSECTED.material.opacity = 1.0; // Make fully opaque
+
+                    const data = INTERSECTED.userData;
+                    infoSymbol.textContent = data.symbol;
+                    infoName.textContent = data.name;
+                    infoNumber.textContent = data.number;
+                    // Check if atomic_mass exists and is a number before formatting
+                    infoMass.textContent = (typeof data.atomic_mass === 'number') ? data.atomic_mass.toFixed(3) : 'N/A';
+                    infoCategory.textContent = data.category;
+                    infoBlock.textContent = data.block.toUpperCase();
+                    infoSummary.textContent = data.summary || 'No summary available.';
+                    infoBox.style.display = 'block';
+                }
+
+            } else {
+                // Clicked on empty space - deselect if something was selected
+                if (INTERSECTED && !isDragging) { // Only deselect if not starting a drag
+                    INTERSECTED.material.emissive.setHex(INTERSECTED.currentHex);
+                    INTERSECTED.material.opacity = 0.95;
+                    INTERSECTED = null;
+                    infoBox.style.display = 'none';
+                }
+            }
+        }
+
+        function onPointerMove(event) {
+            if (!isDragging || !mouseBody || !draggedBody || !world) return;
+
+            const targetPoint = new THREE.Vector3().copy(mouseBody.position);
+            const newMouseWorldPos = getMouseWorldPositionOnPlane(event, targetPoint);
+
+            if (newMouseWorldPos) {
+                mouseBody.position.set(newMouseWorldPos.x, newMouseWorldPos.y, newMouseWorldPos.z);
+                draggedBody.wakeUp();
+
+                // --- Spawn Sparkles ---
+                if (sparkleSystem && draggedBody) { // Check draggedBody exists
+                    sparkleSystem.visible = true; // Make sure it's visible
+                    let spawned = 0;
+                    // Iterate through particle pool to find inactive ones to activate
+                    for (let i = 0; i < maxSparkles && spawned < sparkleSpawnRate; i++) {
+                        const p = sparkleParticles[i];
+                        if (!p.active) {
+                            p.active = true;
+                            // Start particles at the current position of the dragged body
+                            p.position.copy(draggedBody.position);
+                            // Give particles a random outward velocity
+                            p.velocity.set(
+                                (Math.random() - 0.5),
+                                (Math.random() - 0.5),
+                                (Math.random() - 0.5)
+                            ).normalize().multiplyScalar(sparkleSpeed * (0.7 + Math.random() * 0.6)); // Adjusted speed/variation
+                            // Assign a lifetime with some variation
+                            p.lifetime = sparkleLifetime * (0.7 + Math.random() * 0.6); // Adjusted lifetime/variation
+                            spawned++;
+                        }
+                    }
+                }
+            }
+        }
+
+        function onPointerUp(event) {
+            if (!isDragging || !mouseConstraint || !world) return;
+
+            world.removeConstraint(mouseConstraint);
+            if (sparklerSound) { // Stop sparkler sound
+                sparklerSound.pause();
+                sparklerSound.currentTime = 0;
+            }
+            mouseConstraint = null;
+
+            if (draggedBody) {
+                 draggedBody.wakeUp();
+            }
+
+            // Reset interaction state
+            isDragging = false;
+            draggedBody = null;
+            controls.enabled = true;
+
+            // Hide sparkles when not dragging
+            if (sparkleSystem) {
+                sparkleSystem.visible = false;
+                // Optional: Deactivate all particles immediately on release
+                // sparkleParticles.forEach(p => p.active = false);
+            }
+
+            // Optionally, reset the visual state of the INTERSECTED object if needed,
+            // though it might be better to leave it highlighted until another is clicked.
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!controls || !renderer || !scene || !camera || !world || physicsSync.length === 0) return; // Check if physics is ready
+
+            const deltaTime = clock.getDelta();
+
+            // --- Physics Simulation Step ---
+            // Use a fixed timestep for stability
+            const fixedTimeStep = 1 / 60;
+            const maxSubSteps = 5; // Allow more substeps if needed
+            world.step(fixedTimeStep, deltaTime, maxSubSteps);
+
+            // --- Apply Custom Forces ---
+            const center = new CANNON.Vec3(0, 0, 0);
+            const gravityStrength = 1.8; // Adjusted central pull
+            const floatStrength = 0.25;  // Adjusted random push
+            const maxFloatImpulse = 0.3; // Adjusted cap
+            const centralForceCutoff = 70; // Apply gravity even further out
+            const centralForceExponent = 1.6; // Adjusted falloff power
+
+            elementBodies.forEach(body => {
+                // Don't apply custom forces to the body being dragged
+                if (body === draggedBody) {
+                    return; // Skip custom forces for the dragged body
+                }
+
+                // 1. Central Gravitational Force
+                const pos = body.position;
+                const distanceVector = center.vsub(pos); // Vector from body to center
+                const distanceSq = distanceVector.lengthSquared(); // Use squared distance for efficiency
+                const centralForceCutoffSq = centralForceCutoff * centralForceCutoff;
+
+                if (distanceSq > 0.25 && distanceSq < centralForceCutoffSq) { // Avoid force at very center (0.5*0.5=0.25) and beyond cutoff
+                    const distance = Math.sqrt(distanceSq);
+                    const forceMagnitude = (gravityStrength * body.mass) / (Math.pow(distance, centralForceExponent) + 1.0);
+                    // Calculate force vector pointing towards the center
+                    const force = distanceVector.scale(-forceMagnitude / distance); // Scale the vector pointing *to* center
+                    body.applyForce(force, pos);
+                }
+
+                // 2. Random Floating Impulse (Apply only if awake)
+                if (body.sleepState !== CANNON.Body.SLEEPING && Math.random() < 0.06) { // Reduced frequency slightly
+                    const randomImpulse = new CANNON.Vec3(
+                        (Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)
+                    );
+                    randomImpulse.normalize();
+                    randomImpulse.scale(Math.random() * maxFloatImpulse, randomImpulse); // Apply random magnitude
+                    body.applyImpulse(randomImpulse, pos);
+                }
+
+                // Wake up bodies near the dragged object? (Optional enhancement)
+                // if (draggedBody && body.position.distanceTo(draggedBody.position) < 5) {
+                //     body.wakeUp();
+                // }
+            });
+
+            // --- Update Sparkle Particles ---
+            if (sparkleSystem && sparkleSystem.visible) {
+                const positions = sparkleGeometry.attributes.position.array;
+                const sparkleGravity = new THREE.Vector3(0, -1.5, 0); // Slight downward pull
+                let activeCount = 0; // Keep track of active particles
+
+                for (let i = 0; i < maxSparkles; i++) {
+                    const p = sparkleParticles[i];
+                    if (p.active) {
+                        p.lifetime -= deltaTime;
+                        if (p.lifetime <= 0) {
+                            p.active = false;
+                            // Set position to NaN to effectively hide the particle
+                            positions[i * 3 + 0] = NaN;
+                            positions[i * 3 + 1] = NaN;
+                            positions[i * 3 + 2] = NaN;
+                            continue; // Skip update for this particle
+                        }
+
+                        // Apply gravity to velocity
+                        p.velocity.addScaledVector(sparkleGravity, deltaTime);
+                        // Update position based on velocity
+                        p.position.addScaledVector(p.velocity, deltaTime);
+
+                        // Update the buffer attribute array
+                        positions[i * 3 + 0] = p.position.x;
+                        positions[i * 3 + 1] = p.position.y;
+                        positions[i * 3 + 2] = p.position.z;
+                        activeCount++;
+                    } else {
+                        // Ensure inactive particles are also marked as NaN in the buffer
+                        positions[i * 3 + 0] = NaN;
+                        positions[i * 3 + 1] = NaN;
+                        positions[i * 3 + 2] = NaN;
+                    }
+                }
+                // sparkleGeometry.setDrawRange(0, activeCount); // Optional optimization
+                sparkleGeometry.attributes.position.needsUpdate = true; // Tell Three.js the buffer changed
+            }
+
+            // --- Sync Three.js Meshes with Physics Bodies ---
+            physicsSync.forEach(sync => {
+                sync.mesh.position.copy(sync.body.position);
+                sync.mesh.quaternion.copy(sync.body.quaternion);
+            });
+
+            controls.update(); // Update camera controls
+            renderer.render(scene, camera); // Render the scene
+        }
+
+        // --- Start ---
+        loadDataAndInit(); // Call the async function to load data and then initialize
+
+    </script>
+</body>
+</html>
